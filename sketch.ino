@@ -1,6 +1,8 @@
 #define DECODE_NEC
 #include <IRremote.hpp>
 #include <DHT.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 
 // --- Pins (adjust if needed) ---
 constexpr uint8_t IR_RECV_PIN {3};
@@ -25,12 +27,10 @@ constexpr uint8_t ECHO2_PIN {7};
 constexpr uint16_t TOGGLE_BTN = 0x68;
 const int LDR_THRESHOLD = 2000; // calibrate to your LDR and ADC range
 
-
 // buzzer config
 constexpr uint8_t BUZZER_PIN {5};  // connect buzzer to digital pin 5
 const int MQ2_THRESHOLD = 3000;     // adjust threshold for gas detection
 const int BUZZER_FREQ = 2000;      // buzzer frequency in Hz
-
 
 #define DHTTYPE DHT22
 DHT dht(DHT_PIN, DHTTYPE);
@@ -49,7 +49,18 @@ const long DISTANCE_TRIGGER_CM = 200;   // use 200 cm for Wokwi slider-friendly 
 const unsigned long PAIR_WINDOW_MS = 70000; // 7 seconds pairing window (slower testing)
 const unsigned long EDGE_DEBOUNCE_MS = 200; // ignore bounce within 200ms
 
-// helper to measure one ultrasonic sensor (non-blocking wrapper)
+// WiFi & MQTT
+const char* ssid = "Wokwi-GUEST";        // <-- replace with your WiFi
+const char* password = "";    // <-- replace with your WiFi password
+const char* mqttServer = "broker.hivemq.com";
+const uint16_t mqttPort = 1883;
+const char* mqttTopic = "myhome/room/relay/set";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// --- Helper Functions ---
+
 long getDistancePins(uint8_t trigPin, uint8_t echoPin) {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
@@ -57,57 +68,54 @@ long getDistancePins(uint8_t trigPin, uint8_t echoPin) {
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  // pulseIn with timeout to avoid lockups (30 ms)
   long duration = pulseIn(echoPin, HIGH, 30000);
-  if (duration == 0) return -1; // timeout / no echo
-  long distance = duration * 0.034 / 2; // cm
+  if (duration == 0) return -1; // timeout
+  long distance = duration * 0.034 / 2;
   return distance;
 }
 
-void setup() {
-  Serial.begin(115200);
+// MQTT callback
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+  msg.trim();
 
-  // --- Relay LED ---
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);
-
-  // --- LED2 ---
-  pinMode(LED2_PIN, OUTPUT);
-  digitalWrite(LED2_PIN, LOW);
-
-  // --- IR ---
-  IrReceiver.begin(IR_RECV_PIN);
-
-  // --- DHT ---
-  dht.begin();
-
-  // --- MQ-2 ---
-  pinMode(MQ2_PIN, INPUT);
-
-  // --- PIR + Ultrasonic setup ---
-  // pinMode(PIR_PIN, INPUT);
-
-  pinMode(TRIG1_PIN, OUTPUT);
-  pinMode(ECHO1_PIN, INPUT);
-
-  pinMode(TRIG2_PIN, OUTPUT);
-  pinMode(ECHO2_PIN, INPUT);
-
-
-  // buzzer setup
-  pinMode(BUZZER_PIN, OUTPUT);
-digitalWrite(BUZZER_PIN, LOW);
-
-
-  Serial.println("System ready");
+  if (msg == "ON") {
+    digitalWrite(RELAY_PIN, HIGH);
+    Serial.println("MQTT Relay ON");
+  } else if (msg == "OFF") {
+    digitalWrite(RELAY_PIN, LOW);
+    Serial.println("MQTT Relay OFF");
+  } else if (msg == "TOGGLE") {
+    digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
+    Serial.println("MQTT Relay TOGGLE");
+  }
 }
 
+// Reconnect MQTT
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Connecting to MQTT...");
+    if (client.connect("ESP32_Relay")) {
+      Serial.println("connected");
+      client.subscribe(mqttTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 2 seconds");
+      delay(2000);
+    }
+  }
+}
+
+// Handle ultrasonic pairing for people counting
 void handleUltrasonicPairing(bool rising1, bool rising2) {
   unsigned long now = millis();
 
   if (rising1) {
     lastActivate1 = now;
-    // If sensor2 fired recently and before sensor1 => exit
     if (lastActivate2 > 0 && (now - lastActivate2) <= PAIR_WINDOW_MS && lastActivate2 + EDGE_DEBOUNCE_MS < now) {
       if (lastActivate2 < lastActivate1) {
         if (personCount > 0) personCount--;
@@ -120,7 +128,6 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
 
   if (rising2) {
     lastActivate2 = now;
-    // If sensor1 fired recently and before sensor2 => entry
     if (lastActivate1 > 0 && (now - lastActivate1) <= PAIR_WINDOW_MS && lastActivate1 + EDGE_DEBOUNCE_MS < now) {
       if (lastActivate1 < lastActivate2) {
         personCount++;
@@ -132,7 +139,56 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
   }
 }
 
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+
+  pinMode(LED2_PIN, OUTPUT);
+  digitalWrite(LED2_PIN, LOW);
+
+  IrReceiver.begin(IR_RECV_PIN);
+
+  dht.begin();
+  pinMode(MQ2_PIN, INPUT);
+
+  pinMode(TRIG1_PIN, OUTPUT);
+  pinMode(ECHO1_PIN, INPUT);
+
+  pinMode(TRIG2_PIN, OUTPUT);
+  pinMode(ECHO2_PIN, INPUT);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // --- WiFi ---
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // --- MQTT ---
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(mqttCallback);
+  reconnectMQTT();
+
+  Serial.println("System ready");
+}
+
+// --- Main Loop ---
 void loop() {
+  // --- MQTT loop ---
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
 
   // --- IR control ---
   if (IrReceiver.decode()) {
@@ -147,10 +203,6 @@ void loop() {
   int ldrValue = analogRead(LDR_PIN);
   bool isDark = ldrValue > LDR_THRESHOLD;
 
-  // --- PIR ---
-  // int pirState = digitalRead(PIR_PIN);
-  // bool motionDetected = pirState == HIGH;
-
   // --- Ultrasonic sensors ---
   long distance1 = getDistancePins(TRIG1_PIN, ECHO1_PIN);
   long distance2 = getDistancePins(TRIG2_PIN, ECHO2_PIN);
@@ -158,32 +210,20 @@ void loop() {
   bool objectClose1 = (distance1 > 0 && distance1 < DISTANCE_TRIGGER_CM);
   bool objectClose2 = (distance2 > 0 && distance2 < DISTANCE_TRIGGER_CM);
 
-  // Rising-edge detection with debounce
   unsigned long now = millis();
   bool rising1 = false;
   bool rising2 = false;
 
-  if (objectClose1 && !lastState1) {
-    if (now - lastActivate1 > EDGE_DEBOUNCE_MS) {
-      rising1 = true;
-    }
-  }
-  if (objectClose2 && !lastState2) {
-    if (now - lastActivate2 > EDGE_DEBOUNCE_MS) {
-      rising2 = true;
-    }
-  }
+  if (objectClose1 && !lastState1 && (now - lastActivate1 > EDGE_DEBOUNCE_MS)) rising1 = true;
+  if (objectClose2 && !lastState2 && (now - lastActivate2 > EDGE_DEBOUNCE_MS)) rising2 = true;
 
-  // update last states
   lastState1 = objectClose1;
   lastState2 = objectClose2;
 
-  // handle pairing and counting only on detected rising edges
   if (rising1 || rising2) {
     handleUltrasonicPairing(rising1, rising2);
   }
 
-  // Safety: don't allow negative counts
   if (personCount < 0) personCount = 0;
 
   // --- LED2 logic (room light) ---
@@ -193,9 +233,8 @@ void loop() {
     digitalWrite(LED2_PIN, LOW);
   }
 
-  // --- Serial status for debugging ---
+  // --- Serial debug ---
   Serial.print("LDR: "); Serial.print(ldrValue);
-  // Serial.print("  PIR: "); Serial.print(pirState);
   Serial.print("  Dist1: "); Serial.print(distance1);
   Serial.print(" cm  Dist2: "); Serial.print(distance2);
   Serial.print(" cm  Count: "); Serial.println(personCount);
@@ -208,16 +247,14 @@ void loop() {
     Serial.print("C  Hum: "); Serial.println(h);
   }
 
-  // --- MQ-2 ---
+  // --- MQ-2 + Buzzer ---
   int mq2 = analogRead(MQ2_PIN);
   Serial.print("MQ2: "); Serial.println(mq2);
-  // --- Buzzer logic ---
   if (mq2 > MQ2_THRESHOLD) {
-      // Beep buzzer
-      tone(BUZZER_PIN, BUZZER_FREQ); // start buzzer at given frequency
+    tone(BUZZER_PIN, BUZZER_FREQ);
   } else {
-      noTone(BUZZER_PIN); // stop buzzer
+    noTone(BUZZER_PIN);
   }
 
-  delay(120); // small delay
+  delay(120);
 }
