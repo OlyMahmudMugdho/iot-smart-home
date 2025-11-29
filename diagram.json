@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "author": "Anonymous maker",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": -0.18, "left": -53.03, "attrs": {} },
+    { "type": "wokwi-ir-remote", "id": "remote1", "top": 96, "left": -297.6, "attrs": {} },
+    { "type": "wokwi-ir-receiver", "id": "ir1", "top": 37.05, "left": 257.42, "attrs": {} },
+    { "type": "wokwi-led", "id": "led1", "top": 34.8, "left": 80.6, "attrs": { "color": "red" } },
+    { "type": "wokwi-relay-module", "id": "relay1", "top": 144.2, "left": 76.8, "attrs": {} },
+    { "type": "wokwi-led", "id": "led2", "top": 25.2, "left": 349.4, "attrs": { "color": "red" } },
+    { "type": "wokwi-photoresistor-sensor", "id": "ldr1", "top": 214.4, "left": 308, "attrs": {} },
+    { "type": "wokwi-dht22", "id": "dht1", "top": -134.1, "left": 522.6, "attrs": {} },
+    { "type": "wokwi-gas-sensor", "id": "gas1", "top": 69.9, "left": 602.2, "attrs": {} },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "ultrasonic1",
+      "top": 155.1,
+      "left": 523.9,
+      "attrs": { "distance": "400" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text1",
+      "top": 96,
+      "left": 57.6,
+      "attrs": { "text": "REL_CTRL_LED" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text2",
+      "top": 96,
+      "left": 326.4,
+      "attrs": { "text": "USONIC_LDR_LED" }
+    },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "ultrasonic2",
+      "top": -123.3,
+      "left": 629.5,
+      "attrs": { "distance": "400" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text3",
+      "top": 182.4,
+      "left": 672,
+      "rotate": 270,
+      "attrs": { "text": "USONIC_1" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text4",
+      "top": -96,
+      "left": 796.8,
+      "rotate": 270,
+      "attrs": { "text": "USONIC_2" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text5",
+      "top": 38.4,
+      "left": 604.8,
+      "attrs": { "text": "GAS_SMOKE" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text6",
+      "top": -115.2,
+      "left": 422.4,
+      "attrs": { "text": "TEMP_HUM" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text7",
+      "top": 182.4,
+      "left": 336,
+      "attrs": { "text": "LIGHT_SENSOR" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text8",
+      "top": 201.6,
+      "left": 115.2,
+      "attrs": { "text": "RELAY" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text9",
+      "top": 412.8,
+      "left": -259.2,
+      "attrs": { "text": "IR_REMOTE" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": -55.2,
+      "left": -305.4,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "text10",
+      "top": -28.8,
+      "left": -384,
+      "attrs": { "text": "BUZZER" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "ir1:GND", "esp:GND.2", "black", [ "v9.6", "h-48", "v-105.6" ] ],
+    [ "esp:GND.2", "led1:C", "black", [ "v0", "h38.4", "v48" ] ],
+    [ "relay1:IN", "esp:2", "orange", [ "h-28.8", "v-0.2" ] ],
+    [ "relay1:GND", "esp:GND.3", "black", [ "h-28.8", "v47.6" ] ],
+    [ "ir1:DAT", "esp:3", "orange", [ "v182.4", "h-384", "v-124.8" ] ],
+    [ "ir1:VCC", "esp:3V3.2", "red", [ "v192", "h-364.8", "v-278.4" ] ],
+    [ "led1:A", "relay1:COM", "orange", [ "v9.6", "h115.2", "v86.4" ] ],
+    [ "relay1:VCC", "esp:5V", "red", [ "h-19.2", "v115.2", "h-124.8", "v9.6" ] ],
+    [ "relay1:NO", "esp:5V", "red", [ "h1.2", "v113.4", "h-297.6", "v-9.6" ] ],
+    [ "ldr1:GND", "esp:GND.2", "black", [ "h9.6", "v-211.6", "h-441.6" ] ],
+    [ "led2:C", "esp:GND.2", "black", [ "v9.6", "h-38", "v-57.6", "h-278.4" ] ],
+    [ "led2:A", "esp:12", "orange", [ "v19.2", "h28.8", "v-105.6", "h-460.8", "v211.2" ] ],
+    [ "ldr1:AO", "esp:13", "white", [ "h0", "v37.7", "h-576", "v-76.8" ] ],
+    [ "gas1:GND", "esp:GND.4", "black", [ "h28.8", "v162.4", "h-595.2", "v-19.2" ] ],
+    [ "esp:37", "dht1:SDA", "orange", [ "h144", "v-163.2", "h316.8", "v48", "h48" ] ],
+    [
+      "dht1:VCC",
+      "esp:3V3.2",
+      "red",
+      [ "v19.2", "h-28.8", "v-76.8", "h-585.6", "v105.6", "h-9.6" ]
+    ],
+    [ "dht1:GND", "esp:GND.1", "black", [ "v57.6", "h-57.6", "v288", "h-566.4", "v-96" ] ],
+    [ "ultrasonic1:VCC", "esp:3V3.2", "red", [ "v105.6", "h-710.4", "v-326.4" ] ],
+    [
+      "ultrasonic1:GND",
+      "esp:GND.4",
+      "white",
+      [ "v9.6", "h181.2", "v105.6", "h-729.6", "v-134.4" ]
+    ],
+    [ "ultrasonic1:TRIG", "esp:8", "#8f4814", [ "v115.2", "h-701.2", "v-201.6" ] ],
+    [ "ultrasonic1:ECHO", "esp:9", "gold", [ "v124.8", "h-740", "v-268.8" ] ],
+    [
+      "gas1:VCC",
+      "esp:3V3.2",
+      "red",
+      [ "h0", "v27.9", "h-211.2", "v-124.8", "h-38.4", "v-67.2", "h-614.4", "v76.8" ]
+    ],
+    [
+      "gas1:AOUT",
+      "esp:10",
+      "orange",
+      [ "h28.8", "v-19.2", "h-326.4", "v-134.4", "h-508.8", "v240" ]
+    ],
+    [ "ultrasonic2:VCC", "esp:3V3.2", "red", [ "v9.6", "h-76.8", "v-124.8", "h-816", "v163.2" ] ],
+    [ "ultrasonic2:ECHO", "esp:7", "orange", [ "v28.8", "h95.2", "v-153.6", "h-1036.8", "v240" ] ],
+    [
+      "ultrasonic2:GND",
+      "esp:GND.4",
+      "white",
+      [ "v86.4", "h56.4", "v230.4", "h-720", "v-48", "h-19.2" ]
+    ],
+    [ "ultrasonic2:TRIG", "esp:6", "orange", [ "v19.2", "h-106", "v-153.6", "h-700.8", "v240" ] ],
+    [ "bz1:2", "esp:5", "gold", [ "v0" ] ],
+    [ "bz1:1", "esp:GND.2", "white", [ "v9.6", "h-38.4", "v-96", "h364.8" ] ],
+    [ "ldr1:VCC", "esp:3V3.2", "red", [ "h0", "v-268.8", "h-566.4", "v67.2" ] ]
+  ],
+  "dependencies": {}
+}
