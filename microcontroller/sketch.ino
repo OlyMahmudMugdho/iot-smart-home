@@ -34,13 +34,21 @@ const long DISTANCE_TRIGGER_CM = 200;
 const unsigned long PAIR_WINDOW_MS = 70000;
 const unsigned long EDGE_DEBOUNCE_MS = 200;
 
+// LED2 Manual Mode Control
+bool manualMode = false;      // When true, MQTT controls LED2; when false, sensors control LED2
+bool manualLedState = false;  // Desired LED2 state when in manual mode
+
 // WiFi & MQTT
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
 const char* mqttServer = "broker.hivemq.com";
 const uint16_t mqttPort = 1883;
+
+// MQTT Topics
 const char* mqttTopicRelay = "myhome/room/relay/set";
 const char* mqttTopicMetrics = "myhome/room/metrics";
+const char* mqttTopicLED = "myhome/room/led/set";           // LED2 ON/OFF control
+const char* mqttTopicManualMode = "myhome/room/led/manual"; // Manual mode ON/OFF
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -61,16 +69,72 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
   msg.trim();
+  
+  String topicStr = String(topic);
 
-  if (msg == "ON") digitalWrite(RELAY_PIN, HIGH);
-  else if (msg == "OFF") digitalWrite(RELAY_PIN, LOW);
-  else if (msg == "TOGGLE") digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
+  // Handle Relay control (existing feature)
+  if (topicStr == mqttTopicRelay) {
+    if (msg == "ON") digitalWrite(RELAY_PIN, HIGH);
+    else if (msg == "OFF") digitalWrite(RELAY_PIN, LOW);
+    else if (msg == "TOGGLE") digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
+    Serial.println("Relay command: " + msg);
+  }
+  
+  // Handle LED2 control (only works in manual mode)
+  else if (topicStr == mqttTopicLED) {
+    if (msg == "ON") {
+      manualLedState = true;
+      Serial.println("LED command: ON");
+    }
+    else if (msg == "OFF") {
+      manualLedState = false;
+      Serial.println("LED command: OFF");
+    }
+    else if (msg == "TOGGLE") {
+      manualLedState = !manualLedState;
+      Serial.println("LED command: TOGGLE");
+    }
+    
+    // Apply immediately if in manual mode
+    if (manualMode) {
+      digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
+    }
+  }
+  
+  // Handle Manual Mode toggle
+  else if (topicStr == mqttTopicManualMode) {
+    if (msg == "ON") {
+      manualMode = true;
+      // Apply the manual LED state immediately
+      digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
+      Serial.println("Manual mode: ENABLED - Sensors overridden");
+    }
+    else if (msg == "OFF") {
+      manualMode = false;
+      Serial.println("Manual mode: DISABLED - Sensors controlling LED");
+    }
+  }
 }
 
 void reconnectMQTT() {
   while (!client.connected()) {
-    if (client.connect("ESP32_Relay")) client.subscribe(mqttTopicRelay);
-    else delay(2000);
+    Serial.print("Connecting to MQTT...");
+    if (client.connect("ESP32_SmartHome")) {
+      Serial.println("connected!");
+      // Subscribe to all control topics
+      client.subscribe(mqttTopicRelay);
+      client.subscribe(mqttTopicLED);
+      client.subscribe(mqttTopicManualMode);
+      Serial.println("Subscribed to topics:");
+      Serial.println(" - " + String(mqttTopicRelay));
+      Serial.println(" - " + String(mqttTopicLED));
+      Serial.println(" - " + String(mqttTopicManualMode));
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retrying in 2s...");
+      delay(2000);
+    }
   }
 }
 
@@ -90,7 +154,7 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
   }
 }
 
-// Publish metrics
+// Publish metrics (now includes manual mode and LED state)
 void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float hum, int count) {
   String payload = "{";
   payload += "\"LDR\":" + String(ldr);
@@ -99,7 +163,9 @@ void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float h
   payload += ",\"MQ2\":" + String(mq2Value);
   payload += ",\"Temp\":" + String(temp);
   payload += ",\"Hum\":" + String(hum);
-  payload += ",\"Count\":" + String(personCount);
+  payload += ",\"Count\":" + String(count);
+  payload += ",\"LED2\":" + String(digitalRead(LED2_PIN) ? "true" : "false");
+  payload += ",\"ManualMode\":" + String(manualMode ? "true" : "false");
   payload += "}";
   client.publish(mqttTopicMetrics, payload.c_str());
 }
@@ -107,6 +173,8 @@ void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float h
 // --- Setup ---
 void setup() {
   Serial.begin(115200);
+  Serial.println("\n=== ESP32 Smart Home Controller ===");
+  
   pinMode(RELAY_PIN, OUTPUT); digitalWrite(RELAY_PIN, LOW);
   pinMode(LED2_PIN, OUTPUT); digitalWrite(LED2_PIN, LOW);
   pinMode(MQ2_PIN, INPUT);
@@ -117,12 +185,25 @@ void setup() {
   IrReceiver.begin(IR_RECV_PIN);
   dht.begin();
 
+  Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  Serial.println("IP: " + WiFi.localIP().toString());
 
   client.setServer(mqttServer, mqttPort);
   client.setCallback(mqttCallback);
   reconnectMQTT();
+  
+  Serial.println("\nMQTT Topics:");
+  Serial.println("  Relay Control: " + String(mqttTopicRelay));
+  Serial.println("  LED Control:   " + String(mqttTopicLED));
+  Serial.println("  Manual Mode:   " + String(mqttTopicManualMode));
+  Serial.println("  Metrics:       " + String(mqttTopicMetrics));
+  Serial.println("\n=== System Ready ===\n");
 }
 
 // --- Loop ---
@@ -130,14 +211,16 @@ void loop() {
   if (!client.connected()) reconnectMQTT();
   client.loop();
 
-  // IR control
+  // IR control (for RELAY_PIN - existing feature)
   if (IrReceiver.decode()) {
-    if (IrReceiver.decodedIRData.command == TOGGLE_BTN)
+    if (IrReceiver.decodedIRData.command == TOGGLE_BTN) {
       digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
+      Serial.println("IR: Relay toggled");
+    }
     IrReceiver.resume();
   }
 
-  // Sensors
+  // Read Sensors
   int ldrValue = analogRead(LDR_PIN);
   long dist1 = getDistancePins(TRIG1_PIN, ECHO1_PIN);
   long dist2 = getDistancePins(TRIG2_PIN, ECHO2_PIN);
@@ -145,6 +228,7 @@ void loop() {
   float t = dht.readTemperature();
   float h = dht.readHumidity();
 
+  // Person counting logic
   bool objectClose1 = (dist1 > 0 && dist1 < DISTANCE_TRIGGER_CM);
   bool objectClose2 = (dist2 > 0 && dist2 < DISTANCE_TRIGGER_CM);
   unsigned long now = millis();
@@ -154,9 +238,24 @@ void loop() {
   if (rising1 || rising2) handleUltrasonicPairing(rising1, rising2);
   if (personCount < 0) personCount = 0;
 
-  if (personCount > 0 && ldrValue > LDR_THRESHOLD) digitalWrite(LED2_PIN, HIGH);
-  else digitalWrite(LED2_PIN, LOW);
+  // LED2 Control Logic
+  // If manual mode is OFF, sensors control LED2
+  // If manual mode is ON, MQTT commands control LED2
+  if (!manualMode) {
+    // Automatic mode: Sensors control LED2
+    // LED2 ON when: people in room AND it's dark (LDR > threshold)
+    if (personCount > 0 && ldrValue > LDR_THRESHOLD) {
+      digitalWrite(LED2_PIN, HIGH);
+    } else {
+      digitalWrite(LED2_PIN, LOW);
+    }
+  } else {
+    // Manual mode: Continuously enforce the manual LED state
+    // This ensures the LED stays in the commanded state
+    digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
+  }
 
+  // Gas/Smoke alarm (always active regardless of mode)
   if (mq2Value > MQ2_THRESHOLD) tone(BUZZER_PIN, BUZZER_FREQ);
   else noTone(BUZZER_PIN);
 
