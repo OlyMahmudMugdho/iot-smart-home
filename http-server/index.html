@@ -411,6 +411,16 @@
         let manualMode = false;
         let metrics = {};
         let syncInterval = 1000; // Sync every 1 second
+        
+        // Loading states - prevent sync updates while commands are pending
+        let isManualModeLoading = false;
+        let isLedLoading = false;
+        let isRelayLoading = false;
+        
+        // Timestamp-based state locking to prevent fluctuation
+        let lastManualActionTime = 0;
+        let lastLedActionTime = 0;
+        const UPDATE_IGNORE_DURATION = 5000; // Ignore external updates for 5s after action
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -423,30 +433,92 @@
 
         // Fetch LED and Manual Mode state from server
         async function fetchState() {
+            // Skip if loading or recently interacted
+            if (isManualModeLoading || isLedLoading) return;
+            
             try {
                 const response = await fetch('/state');
                 const data = await response.json();
                 
-                if (data.ledState !== ledState) {
-                    ledState = data.ledState;
-                    updateLedUI();
-                }
-                if (data.manualMode !== manualMode) {
-                    manualMode = data.manualMode;
-                    updateManualModeUI();
+                // Manual Mode Sync - Respect cooldown
+                const now = Date.now();
+                if (!isManualModeLoading && (now - lastManualActionTime > UPDATE_IGNORE_DURATION)) {
+                    if (data.manualMode !== manualMode) {
+                        manualMode = data.manualMode;
+                        updateManualModeUI();
+                    }
                 }
             } catch (error) {
                 console.error('Failed to fetch state:', error);
             }
         }
 
+        // Set loading state with visual feedback
+        function setLoadingState(type, loading) {
+            if (type === 'manualMode') {
+                isManualModeLoading = loading;
+                const toggle = document.getElementById('manualModeToggle');
+                const slider = toggle.nextElementSibling;
+                const desc = document.getElementById('manualModeDesc');
+                
+                if (loading) {
+                    slider.style.opacity = '0.6';
+                    slider.innerHTML = '<span class="absolute inset-0 flex items-center justify-center"><i class="fas fa-spinner fa-spin text-white text-sm"></i></span>';
+                    desc.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> Sending...';
+                    toggle.disabled = true;
+                } else {
+                    slider.style.opacity = '';
+                    slider.innerHTML = '';
+                    toggle.disabled = false;
+                }
+            } else if (type === 'led') {
+                isLedLoading = loading;
+                const toggle = document.getElementById('ledToggle');
+                const slider = document.getElementById('ledSlider');
+                const desc = document.getElementById('ledControlDesc');
+                
+                if (loading) {
+                    slider.style.opacity = '0.6';
+                    slider.innerHTML = '<span class="absolute inset-0 flex items-center justify-center"><i class="fas fa-spinner fa-spin text-white text-sm"></i></span>';
+                    desc.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> Sending...';
+                    toggle.disabled = true;
+                } else {
+                    slider.innerHTML = '';
+                    // Restore proper state based on manual mode
+                    if (manualMode) {
+                        slider.style.opacity = '1';
+                        toggle.disabled = false;
+                    }
+                }
+            } else if (type === 'relay') {
+                isRelayLoading = loading;
+                const toggle = document.getElementById('relayToggle');
+                const slider = toggle.nextElementSibling;
+                
+                if (loading) {
+                    slider.style.opacity = '0.6';
+                    slider.innerHTML = '<span class="absolute inset-0 flex items-center justify-center"><i class="fas fa-spinner fa-spin text-white text-sm"></i></span>';
+                    toggle.disabled = true;
+                } else {
+                    slider.style.opacity = '';
+                    slider.innerHTML = '';
+                    toggle.disabled = false;
+                }
+            }
+        }
+
         // LED Control
         async function sendLEDCommand(state) {
+            setLoadingState('led', true);
+            
             try {
                 const response = await fetch(`/led/${state}`);
                 const text = await response.text();
                 
                 ledState = state === 'on';
+                // Important: Update timestamp to block incoming stale metrics
+                lastLedActionTime = Date.now();
+                
                 updateLedUI();
                 addActivityLog(`LED turned ${state.toUpperCase()}`, state === 'on' ? 'success' : 'warning');
                 showToast(`LED ${state.toUpperCase()} command sent`, 'success');
@@ -455,6 +527,11 @@
             } catch (error) {
                 showToast('Failed to send LED command', 'error');
                 addActivityLog('Failed to send LED command', 'error');
+                // Revert toggle on error
+                document.getElementById('ledToggle').checked = ledState;
+            } finally {
+                setLoadingState('led', false);
+                updateManualModeUI(); // Restore proper desc text
             }
         }
 
@@ -464,6 +541,9 @@
         }
 
         function updateLedUI() {
+            // Don't update if loading
+            if (isLedLoading) return;
+            
             const indicator = document.getElementById('ledIndicator');
             const icon = document.getElementById('ledIcon');
             const status = document.getElementById('ledStatus');
@@ -484,12 +564,15 @@
 
         // Manual Mode Control
         async function sendManualModeCommand(state) {
+            setLoadingState('manualMode', true);
+            
             try {
                 const response = await fetch(`/manual/${state}`);
                 const text = await response.text();
                 
                 manualMode = state === 'on';
-                updateManualModeUI();
+                // Important: Update timestamp to block incoming stale metrics
+                lastManualActionTime = Date.now();
                 
                 const modeText = manualMode ? 'Manual Override' : 'Automatic (Sensor Control)';
                 addActivityLog(`LED mode changed to ${modeText}`, 'info');
@@ -499,6 +582,9 @@
                 addActivityLog('Failed to change LED mode', 'error');
                 // Revert toggle
                 document.getElementById('manualModeToggle').checked = manualMode;
+            } finally {
+                setLoadingState('manualMode', false);
+                updateManualModeUI();
             }
         }
 
@@ -508,6 +594,9 @@
         }
 
         function updateManualModeUI() {
+            // Don't update if loading
+            if (isManualModeLoading) return;
+            
             const toggle = document.getElementById('manualModeToggle');
             const ledToggle = document.getElementById('ledToggle');
             const ledSlider = document.getElementById('ledSlider');
@@ -521,10 +610,12 @@
 
             if (manualMode) {
                 // Manual mode ON - enable LED control
-                ledToggle.disabled = false;
-                ledSlider.style.opacity = '1';
-                ledSlider.style.cursor = 'pointer';
-                ledControlDesc.textContent = 'Control LED manually';
+                if (!isLedLoading) {
+                    ledToggle.disabled = false;
+                    ledSlider.style.opacity = '1';
+                    ledSlider.style.cursor = 'pointer';
+                    ledControlDesc.textContent = 'Control LED manually';
+                }
                 manualModeDesc.textContent = 'Override active';
                 ledMode.textContent = 'Mode: Manual Override';
                 manualSlider.style.backgroundColor = '';
@@ -558,6 +649,9 @@
                     </div>
                 `;
             }
+            
+            // Always sync the LED toggle state with actual ledState
+            updateLedUI();
         }
 
         // Theme Management
@@ -636,23 +730,34 @@
                     renderMetrics();
                     document.getElementById('lastUpdate').textContent = `Last update: ${new Date().toLocaleTimeString()}`;
                     
-                    // Sync Relay status from metrics
-                    if (data.Relay !== undefined && data.Relay !== relayState) {
+                    // Sync Relay status from metrics (only if not loading)
+                    if (!isRelayLoading && data.Relay !== undefined && data.Relay !== relayState) {
                         relayState = data.Relay;
                         updateRelayUI();
                     }
-                    
-                    // Sync LED status from metrics (ESP32 sends "LED2")
-                    if (data.LED2 !== undefined && data.LED2 !== ledState) {
-                        ledState = data.LED2;
-                        updateLedUI();
-                    }
-                    
-                    // Sync Manual Mode from metrics
-                    if (data.ManualMode !== undefined && data.ManualMode !== manualMode) {
-                        manualMode = data.ManualMode;
-                        updateManualModeUI();
-                    }
+                }
+                
+                // Skip LED/ManualMode sync if commands are in progress
+                if (isLedLoading || isManualModeLoading) {
+                    return;
+                }
+                
+                const now = Date.now();
+
+                // Sync LED status from metrics (ESP32 sends "LED2")
+                // Only if enough time has passed since user interaction
+                if ((now - lastLedActionTime > UPDATE_IGNORE_DURATION) && 
+                    data.LED2 !== undefined && data.LED2 !== ledState) {
+                    ledState = data.LED2;
+                    updateLedUI();
+                }
+                
+                // Sync Manual Mode from metrics
+                // Only if enough time has passed since user interaction
+                if ((now - lastManualActionTime > UPDATE_IGNORE_DURATION) && 
+                    data.ManualMode !== undefined && data.ManualMode !== manualMode) {
+                    manualMode = data.ManualMode;
+                    updateManualModeUI();
                 }
             } catch (error) {
                 updateConnectionStatus(false);
