@@ -154,7 +154,7 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
   }
 }
 
-// Publish metrics (now includes manual mode and LED state)
+// Publish metrics (now includes relay status, manual mode and LED state)
 void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float hum, int count) {
   String payload = "{";
   payload += "\"LDR\":" + String(ldr);
@@ -164,6 +164,7 @@ void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float h
   payload += ",\"Temp\":" + String(temp);
   payload += ",\"Hum\":" + String(hum);
   payload += ",\"Count\":" + String(count);
+  payload += ",\"Relay\":" + String(digitalRead(RELAY_PIN) ? "true" : "false");
   payload += ",\"LED2\":" + String(digitalRead(LED2_PIN) ? "true" : "false");
   payload += ",\"ManualMode\":" + String(manualMode ? "true" : "false");
   payload += "}";
