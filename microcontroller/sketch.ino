@@ -4,6 +4,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
+
+
 // --- Pins (adjust if needed) ---
 constexpr uint8_t IR_RECV_PIN {3};
 constexpr uint8_t RELAY_PIN {2};      // IR controlled LED via relay
@@ -39,10 +41,10 @@ bool manualMode = false;      // When true, MQTT controls LED2; when false, sens
 bool manualLedState = false;  // Desired LED2 state when in manual mode
 
 // WiFi & MQTT
-const char* ssid = "Wokwi-GUEST";
-const char* password = "";
-const char* mqttServer = "broker.hivemq.com";
-const uint16_t mqttPort = 1883;
+// const char* ssid = "Wokwi-GUEST";
+// const char* password = "";
+// const char* mqttServer = "broker.hivemq.com";
+// const uint16_t mqttPort = 1883;
 
 // MQTT Topics
 const char* mqttTopicRelay = "myhome/room/relay/set";
@@ -50,8 +52,21 @@ const char* mqttTopicMetrics = "myhome/room/metrics";
 const char* mqttTopicLED = "myhome/room/led/set";           // LED2 ON/OFF control
 const char* mqttTopicManualMode = "myhome/room/led/manual"; // Manual mode ON/OFF
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+
+
+// WiFiClient espClient;
+// PubSubClient client(espClient);
+
+
+// aws iot core
+#include <WiFiClientSecure.h>
+#include "secret.h"
+
+
+WiFiClientSecure secureClient;
+PubSubClient client(secureClient);
+
+
 
 // --- Helper functions ---
 long getDistancePins(uint8_t trigPin, uint8_t echoPin) {
@@ -118,25 +133,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 void reconnectMQTT() {
   while (!client.connected()) {
-    Serial.print("Connecting to MQTT...");
+    Serial.print("Connecting to AWS IoT...");
+    
     if (client.connect("ESP32_SmartHome")) {
       Serial.println("connected!");
-      // Subscribe to all control topics
       client.subscribe(mqttTopicRelay);
       client.subscribe(mqttTopicLED);
       client.subscribe(mqttTopicManualMode);
-      Serial.println("Subscribed to topics:");
-      Serial.println(" - " + String(mqttTopicRelay));
-      Serial.println(" - " + String(mqttTopicLED));
-      Serial.println(" - " + String(mqttTopicManualMode));
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" retrying in 2s...");
+      Serial.print("Failed MQTT, rc=");
+      Serial.println(client.state());
       delay(2000);
     }
   }
 }
+
 
 void handleUltrasonicPairing(bool rising1, bool rising2) {
   unsigned long now = millis();
@@ -187,7 +198,8 @@ void setup() {
   dht.begin();
 
   Serial.print("Connecting to WiFi");
-  WiFi.begin(ssid, password);
+  // WiFi.begin(ssid, password);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -195,8 +207,18 @@ void setup() {
   Serial.println("\nWiFi connected!");
   Serial.println("IP: " + WiFi.localIP().toString());
 
-  client.setServer(mqttServer, mqttPort);
-  client.setCallback(mqttCallback);
+  // client.setServer(mqttServer, mqttPort);
+  // client.setCallback(mqttCallback);
+
+  // aws iot core
+  secureClient.setCACert(AWS_CERT_CA);
+secureClient.setCertificate(AWS_CERT_CRT);
+secureClient.setPrivateKey(AWS_CERT_PRIVATE);
+
+client.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+client.setCallback(mqttCallback);
+
+ //
   reconnectMQTT();
   
   Serial.println("\nMQTT Topics:");
