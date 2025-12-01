@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -14,8 +17,8 @@ import (
 //go:embed index.html
 var staticFiles embed.FS
 
+// MQTT Topics
 const (
-	mqttBroker          = "tcp://broker.hivemq.com:1883"
 	mqttTopicRelay      = "myhome/room/relay/set"
 	mqttTopicMetrics    = "myhome/room/metrics"
 	mqttTopicLED        = "myhome/room/led/set"
@@ -27,19 +30,23 @@ var (
 	metrics    = make(map[string]interface{})
 	mu         sync.RWMutex
 
-	// LED and Manual Mode state
 	ledState   bool
 	manualMode bool
 	stateMu    sync.RWMutex
 )
 
-// Publish to a specific topic
+// Publish helper with logging
 func publish(topic, msg string) {
 	token := mqttClient.Publish(topic, 0, false, msg)
 	token.Wait()
+	if token.Error() != nil {
+		log.Printf("Publish failed on %s: %v\n", topic, token.Error())
+	} else {
+		log.Printf("Published '%s' to topic '%s'\n", msg, topic)
+	}
 }
 
-// HTTP Handlers
+// -------- HTTP Handlers ----------
 func relayOn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	publish(mqttTopicRelay, "ON")
@@ -52,7 +59,6 @@ func relayOff(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Relay OFF command sent\n"))
 }
 
-// LED Control Handlers
 func ledOn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	stateMu.Lock()
@@ -71,7 +77,6 @@ func ledOff(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("LED OFF command sent\n"))
 }
 
-// Manual Mode Handlers
 func manualModeOn(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	stateMu.Lock()
@@ -87,10 +92,9 @@ func manualModeOff(w http.ResponseWriter, r *http.Request) {
 	manualMode = false
 	stateMu.Unlock()
 	publish(mqttTopicManualMode, "OFF")
-	w.Write([]byte("Manual mode disabled - sensors will control LED\n"))
+	w.Write([]byte("Manual mode disabled\n"))
 }
 
-// Get current state
 func stateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
@@ -102,7 +106,6 @@ func stateHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Metrics endpoint
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	mu.RLock()
@@ -111,7 +114,6 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(metrics)
 }
 
-// Serve the UI
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	content, err := staticFiles.ReadFile("index.html")
 	if err != nil {
@@ -122,11 +124,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-// MQTT callback to receive metrics
+// MQTT metrics callback
 func mqttMetricsCallback(client mqtt.Client, msg mqtt.Message) {
 	var newMetrics map[string]interface{}
 	if err := json.Unmarshal(msg.Payload(), &newMetrics); err != nil {
-		log.Println("Failed to unmarshal metrics:", err)
+		log.Println("Failed to parse metrics:", err)
 		return
 	}
 	mu.Lock()
@@ -134,23 +136,71 @@ func mqttMetricsCallback(client mqtt.Client, msg mqtt.Message) {
 		metrics[k] = v
 	}
 	mu.Unlock()
+	log.Printf("Received metrics: %v\n", newMetrics)
+}
+
+// -------- AWS IoT TLS Setup ----------
+func createTLSConfig() *tls.Config {
+	certPath := os.Getenv("AWS_CERT_PATH")
+	keyPath := os.Getenv("AWS_KEY_PATH")
+	caPath := os.Getenv("AWS_CA_PATH")
+
+	if certPath == "" || keyPath == "" || caPath == "" {
+		log.Fatal("Missing AWS IoT certificate environment variables")
+	}
+
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		log.Fatalf("Failed to load cert/key: %v", err)
+	}
+
+	caCert, err := os.ReadFile(caPath)
+	if err != nil {
+		log.Fatalf("Failed to read CA file: %v", err)
+	}
+
+	ca := x509.NewCertPool()
+	if ok := ca.AppendCertsFromPEM(caCert); !ok {
+		log.Fatal("Failed to append CA certificate")
+	}
+
+	return &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            ca,
+		InsecureSkipVerify: false,
+	}
 }
 
 func main() {
-	// MQTT client setup
-	opts := mqtt.NewClientOptions().AddBroker(mqttBroker)
-	opts.SetClientID("go_mqtt_controller")
+	awsEndpoint := os.Getenv("AWS_IOT_ENDPOINT")
+	if awsEndpoint == "" {
+		log.Fatal("Missing AWS_IOT_ENDPOINT environment variable")
+	}
+
+	mqttBroker := "ssl://" + awsEndpoint + ":8883"
+	tlsConfig := createTLSConfig()
+
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(mqttBroker)
+	opts.SetClientID("go_mqtt_controller_unique") // Make sure unique
+	opts.SetTLSConfig(tlsConfig)
+	opts.SetKeepAlive(60)
+	opts.SetPingTimeout(10)
+	opts.AutoReconnect = true
+
 	mqttClient = mqtt.NewClient(opts)
-	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+	if tok := mqttClient.Connect(); tok.Wait() && tok.Error() != nil {
+		log.Fatal("MQTT Connect failed:", tok.Error())
 	}
+	log.Println("Connected to AWS IoT")
 
-	// Subscribe to sensor metrics
-	if token := mqttClient.Subscribe(mqttTopicMetrics, 0, mqttMetricsCallback); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+	// Subscribe to metrics
+	if tok := mqttClient.Subscribe(mqttTopicMetrics, 0, mqttMetricsCallback); tok.Wait() && tok.Error() != nil {
+		log.Fatal("MQTT Subscribe failed:", tok.Error())
 	}
+	log.Println("Subscribed to metrics topic")
 
-	// HTTP endpoints
+	// HTTP Endpoints
 	http.HandleFunc("/", indexHandler)
 	http.HandleFunc("/relay/on", relayOn)
 	http.HandleFunc("/relay/off", relayOff)
@@ -161,12 +211,6 @@ func main() {
 	http.HandleFunc("/state", stateHandler)
 	http.HandleFunc("/metrics", metricsHandler)
 
-	fmt.Println("HTTP Server running on :8080")
-	fmt.Println("Open http://localhost:8080 in your browser")
-	fmt.Println("MQTT Topics:")
-	fmt.Println("  - Relay:       ", mqttTopicRelay)
-	fmt.Println("  - LED:         ", mqttTopicLED)
-	fmt.Println("  - Manual Mode: ", mqttTopicManualMode)
-	fmt.Println("  - Metrics:     ", mqttTopicMetrics)
+	fmt.Println("HTTP server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
