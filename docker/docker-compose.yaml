@@ -2,7 +2,7 @@ services:
   smart-home-backend:
     # Replace with the actual image name of your backend application
     # This application MUST be able to read credentials from environment variables.
-    image: OlyMahmudMugdho/esp32-smart-home:latest
+    image: olymahmudmugdho/esp32-smart-home:latest
     container_name: smart_home_backend
     
     ports:
