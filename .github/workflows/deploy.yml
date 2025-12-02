@@ -13,8 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # (Steps 1 & 2 remain the same: Build, Push, and Prepare the local compose file)
-
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -31,13 +29,30 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/esp32-smart-home:${{ env.TAG }}
 
+      # -------------------------------------------------------------------
+      # FIXED: Use correct compose path + safe image replacement
+      # -------------------------------------------------------------------
       - name: Prepare updated compose file content
         id: prepare_compose
         run: |
-          COMPOSE_CONTENT=$(cat docker/docker-compose.yml | sed "s|olymahmudmugdho/esp32-smart-home:.*|${{ secrets.DOCKERHUB_USERNAME }}/esp32-smart-home:${{ env.TAG }}|g")
+          # Path updated: using root-level docker-compose.yml
+          COMPOSE_FILE="docker-compose.yml"
+
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "ERROR: $COMPOSE_FILE does not exist"
+            exit 1
+          fi
+
+          COMPOSE_CONTENT=$(sed -E "s|(image:.*esp32-smart-home:).*|\1${{ env.TAG }}|" "$COMPOSE_FILE")
+
           echo "$COMPOSE_CONTENT" > /tmp/docker-compose.yml
 
-      # --- 3. Deploy to AWS EC2 Instance via SSH/SCP ---
+      - name: DEBUG print compose file
+        run: cat /tmp/docker-compose.yml
+
+      # -------------------------------------------------------------------
+      # 3. Deploy to AWS EC2 Instance via SSH/SCP
+      # -------------------------------------------------------------------
 
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
@@ -53,36 +68,27 @@ jobs:
           ssh ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }} "mkdir -p $REMOTE_DIR"
           scp /tmp/docker-compose.yml ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:$REMOTE_DIR/docker-compose.yml
 
+      # -------------------------------------------------------------------
+      # 4. SSH into EC2 and run docker-compose with .env injection
+      # -------------------------------------------------------------------
       - name: Docker Compose Down/Up via SSH (Passing ENV VARS)
         run: |
           ssh ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }} << 'EOF'
           REMOTE_DIR="/home/${{ secrets.AWS_EC2_USER }}/esp32-smart-home"
           cd $REMOTE_DIR
           
-          # 🛑 CRITICAL STEP: Write a temporary .env file on the remote machine
-          # The EOF marker with a dash "EOF-" is used to ignore leading tabs/spaces in the script
           cat <<-EOF_ENV > .env
           AWS_IOT_ENDPOINT=${{ secrets.AWS_IOT_ENDPOINT }}
           DDB_TABLE=${{ secrets.DDB_TABLE }}
           AWS_REGION=${{ secrets.AWS_REGION }}
           AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # The multi-line PEM contents are passed here within single quotes to preserve newlines
           AWS_CERT_PEM='${{ secrets.AWS_CERT_PEM }}'
           AWS_PRIVATE_KEY_PEM='${{ secrets.AWS_PRIVATE_KEY_PEM }}'
           AWS_ROOT_CA_PEM='${{ secrets.AWS_ROOT_CA_PEM }}'
           EOF_ENV
 
-          # Stop currently running containers
           sudo docker-compose down
-          
-          # Pull the newly updated image tag from Docker Hub
           sudo docker-compose pull
-          
-          # Start the containers using the new configuration. 
-          # Docker Compose automatically reads from the .env file in the current directory.
           sudo docker-compose up -d
-          
-          # Optional: Clean up the sensitive .env file after startup if desired for security
-          # rm .env
           EOF
