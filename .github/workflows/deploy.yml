@@ -30,19 +30,19 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/esp32-smart-home:${{ env.TAG }}
 
       # -------------------------------------------------------------------
-      # FIXED: Use correct compose path + safe image replacement
+      # FIXED: Use docker/docker-compose.yml (correct path!)
       # -------------------------------------------------------------------
       - name: Prepare updated compose file content
         id: prepare_compose
         run: |
-          # Path updated: using root-level docker-compose.yml
           COMPOSE_FILE="docker/docker-compose.yml"
 
           if [ ! -f "$COMPOSE_FILE" ]; then
-            echo "ERROR: $COMPOSE_FILE does not exist"
+            echo "ERROR: $COMPOSE_FILE not found"
             exit 1
           fi
 
+          # Replace ONLY the tag in the image line
           COMPOSE_CONTENT=$(sed -E "s|(image:.*esp32-smart-home:).*|\1${{ env.TAG }}|" "$COMPOSE_FILE")
 
           echo "$COMPOSE_CONTENT" > /tmp/docker-compose.yml
@@ -51,9 +51,8 @@ jobs:
         run: cat /tmp/docker-compose.yml
 
       # -------------------------------------------------------------------
-      # 3. Deploy to AWS EC2 Instance via SSH/SCP
+      # Deploy to AWS EC2
       # -------------------------------------------------------------------
-
       - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -66,10 +65,11 @@ jobs:
         run: |
           REMOTE_DIR="/home/${{ secrets.AWS_EC2_USER }}/esp32-smart-home"
           ssh ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }} "mkdir -p $REMOTE_DIR"
-          scp /tmp/docker-compose.yml ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:$REMOTE_DIR/docker-compose.yml
+          scp /tmp/docker-compose.yml \
+            ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:$REMOTE_DIR/docker-compose.yml
 
       # -------------------------------------------------------------------
-      # 4. SSH into EC2 and run docker-compose with .env injection
+      # Restart docker-compose on EC2 and pass .env remotely
       # -------------------------------------------------------------------
       - name: Docker Compose Down/Up via SSH (Passing ENV VARS)
         run: |
