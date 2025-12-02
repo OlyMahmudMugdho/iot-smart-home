@@ -1,0 +1,25 @@
+services:
+  smart-home-backend:
+    # Replace with the actual image name of your backend application
+    # This application MUST be able to read credentials from environment variables.
+    image: OlyMahmudMugdho/esp32-smart-home:latest
+    container_name: smart_home_backend
+    
+    ports:
+      - "8080:8080"
+      - "8883:8883"
+      
+    environment:
+      # AWS Credentials and Endpoints
+      AWS_IOT_ENDPOINT: ${AWS_IOT_ENDPOINT}
+      DDB_TABLE: ${DDB_TABLE}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+
+      # Certificate contents (passed as strings via shell variables)
+      AWS_CERT_PEM: ${AWS_CERT_PEM}
+      AWS_PRIVATE_KEY_PEM: ${AWS_PRIVATE_KEY_PEM}
+      AWS_ROOT_CA_PEM: ${AWS_ROOT_CA_PEM}
+      
+    restart: unless-stopped
