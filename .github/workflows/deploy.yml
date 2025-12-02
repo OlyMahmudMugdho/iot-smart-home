@@ -1,4 +1,4 @@
-name: CI/CD Pipeline (Pass Env Vars Remotely)
+name: CI/CD Pipeline
 
 on:
   push:
