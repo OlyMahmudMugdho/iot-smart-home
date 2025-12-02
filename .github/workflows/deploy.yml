@@ -36,7 +36,7 @@ jobs:
         id: prepare_compose
         run: |
           # Path updated: using root-level docker-compose.yml
-          COMPOSE_FILE="docker-compose.yml"
+          COMPOSE_FILE="docker/docker-compose.yml"
 
           if [ ! -f "$COMPOSE_FILE" ]; then
             echo "ERROR: $COMPOSE_FILE does not exist"
