@@ -10,7 +10,12 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -23,6 +28,7 @@ const (
 	mqttTopicMetrics    = "myhome/room/metrics"
 	mqttTopicLED        = "myhome/room/led/set"
 	mqttTopicManualMode = "myhome/room/led/manual"
+	mqttTopicFetch      = "myhome/room/fetch"
 )
 
 var (
@@ -33,6 +39,10 @@ var (
 	ledState   bool
 	manualMode bool
 	stateMu    sync.RWMutex
+
+	// DynamoDB
+	svc       *dynamodb.DynamoDB
+	tableName string
 )
 
 // Publish helper with logging
@@ -137,30 +147,170 @@ func mqttMetricsCallback(client mqtt.Client, msg mqtt.Message) {
 	}
 	mu.Unlock()
 	log.Printf("Received metrics: %v\n", newMetrics)
+
+	// Save to DynamoDB
+	go saveStateToDynamoDB(newMetrics)
+}
+
+// MQTT fetch callback
+func mqttFetchCallback(client mqtt.Client, msg mqtt.Message) {
+	log.Println("Received fetch event from ESP32, syncing state...")
+	go syncStateToDevice()
+}
+
+// -------- DynamoDB Logic ----------
+
+func initDynamoDB() {
+	tableName = os.Getenv("DDB_TABLE")
+	if tableName == "" {
+		log.Println("Warning: DDB_TABLE env var not set. DynamoDB features disabled.")
+		return
+	}
+
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+	svc = dynamodb.New(sess)
+}
+
+func saveStateToDynamoDB(data map[string]interface{}) {
+	if svc == nil || tableName == "" {
+		return
+	}
+
+	item := make(map[string]interface{})
+	for k, v := range data {
+		item[k] = v
+	}
+	// Primary Key: state_id (Number) = 1
+	// Based on user data: "state_id": { "N": "1" }
+	item["state_id"] = 1
+
+	// Add timestamp (likely a sort key based on schema analysis)
+	item["timestamps"] = time.Now().Unix()
+
+	av, err := dynamodbattribute.MarshalMap(item)
+	if err != nil {
+		log.Println("Error marshalling item for DynamoDB:", err)
+		return
+	}
+
+	input := &dynamodb.PutItemInput{
+		Item:      av,
+		TableName: aws.String(tableName),
+	}
+
+	_, err = svc.PutItem(input)
+	if err != nil {
+		log.Println("Error saving to DynamoDB:", err)
+	} else {
+		log.Println("Saved state to DynamoDB")
+	}
+}
+
+func syncStateToDevice() {
+	if svc == nil || tableName == "" {
+		return
+	}
+
+	log.Println("Syncing state from DynamoDB to Device...")
+
+	// Use Query to get the latest item for state_id = 1
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("state_id = :sid"),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":sid": {N: aws.String("1")},
+		},
+		// If timestamps is a sort key, this gets the latest.
+		// If there is no sort key, this just returns the item(s).
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int64(1),
+	}
+
+	result, err := svc.Query(input)
+	if err != nil {
+		log.Println("Error fetching from DynamoDB:", err)
+		return
+	}
+
+	if len(result.Items) == 0 {
+		log.Println("No state found in DynamoDB")
+		return
+	}
+
+	var state map[string]interface{}
+	err = dynamodbattribute.UnmarshalMap(result.Items[0], &state)
+	if err != nil {
+		log.Println("Error unmarshalling DynamoDB item:", err)
+		return
+	}
+
+	// Sync Relay
+	if val, ok := state["Relay"]; ok {
+		shouldBeOn := false
+		if b, ok := val.(bool); ok {
+			shouldBeOn = b
+		} else if s, ok := val.(string); ok {
+			shouldBeOn = (s == "true")
+		}
+
+		if shouldBeOn {
+			publish(mqttTopicRelay, "ON")
+		} else {
+			publish(mqttTopicRelay, "OFF")
+		}
+	}
+
+	// Sync Manual Mode
+	if val, ok := state["ManualMode"]; ok {
+		shouldBeOn := false
+		if b, ok := val.(bool); ok {
+			shouldBeOn = b
+		} else if s, ok := val.(string); ok {
+			shouldBeOn = (s == "true")
+		}
+
+		if shouldBeOn {
+			publish(mqttTopicManualMode, "ON")
+			// Also sync LED state if Manual Mode is ON
+			if ledVal, ok := state["LED2"]; ok {
+				ledOn := false
+				if b, ok := ledVal.(bool); ok {
+					ledOn = b
+				} else if s, ok := ledVal.(string); ok {
+					ledOn = (s == "true")
+				}
+				if ledOn {
+					publish(mqttTopicLED, "ON")
+				} else {
+					publish(mqttTopicLED, "OFF")
+				}
+			}
+		} else {
+			publish(mqttTopicManualMode, "OFF")
+		}
+	}
 }
 
 // -------- AWS IoT TLS Setup ----------
 func createTLSConfig() *tls.Config {
-	certPath := os.Getenv("AWS_CERT_PATH")
-	keyPath := os.Getenv("AWS_KEY_PATH")
-	caPath := os.Getenv("AWS_CA_PATH")
+	// Use Environment Variables for content
+	certPEM := os.Getenv("AWS_CERT_PEM")
+	keyPEM := os.Getenv("AWS_PRIVATE_KEY_PEM")
+	caPEM := os.Getenv("AWS_ROOT_CA_PEM")
 
-	if certPath == "" || keyPath == "" || caPath == "" {
-		log.Fatal("Missing AWS IoT certificate environment variables")
+	if certPEM == "" || keyPEM == "" || caPEM == "" {
+		log.Fatal("Missing AWS IoT certificate environment variables (PEM content)")
 	}
 
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
-		log.Fatalf("Failed to load cert/key: %v", err)
-	}
-
-	caCert, err := os.ReadFile(caPath)
-	if err != nil {
-		log.Fatalf("Failed to read CA file: %v", err)
+		log.Fatalf("Failed to load cert/key pair: %v", err)
 	}
 
 	ca := x509.NewCertPool()
-	if ok := ca.AppendCertsFromPEM(caCert); !ok {
+	if ok := ca.AppendCertsFromPEM([]byte(caPEM)); !ok {
 		log.Fatal("Failed to append CA certificate")
 	}
 
@@ -172,6 +322,9 @@ func createTLSConfig() *tls.Config {
 }
 
 func main() {
+	// Init DynamoDB
+	initDynamoDB()
+
 	awsEndpoint := os.Getenv("AWS_IOT_ENDPOINT")
 	if awsEndpoint == "" {
 		log.Fatal("Missing AWS_IOT_ENDPOINT environment variable")
@@ -182,23 +335,31 @@ func main() {
 
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(mqttBroker)
-	opts.SetClientID("go_mqtt_controller_unique") // Make sure unique
+	opts.SetClientID("go_mqtt_controller_unique_" + fmt.Sprint(time.Now().Unix()))
 	opts.SetTLSConfig(tlsConfig)
 	opts.SetKeepAlive(60)
 	opts.SetPingTimeout(10)
 	opts.AutoReconnect = true
+	opts.SetOnConnectHandler(func(c mqtt.Client) {
+		log.Println("Connected to AWS IoT")
+		// Subscribe to Metrics
+		if tok := c.Subscribe(mqttTopicMetrics, 0, mqttMetricsCallback); tok.Wait() && tok.Error() != nil {
+			log.Println("MQTT Subscribe metrics failed:", tok.Error())
+		} else {
+			log.Println("Subscribed to metrics topic")
+		}
+		// Subscribe to Fetch Events
+		if tok := c.Subscribe(mqttTopicFetch, 0, mqttFetchCallback); tok.Wait() && tok.Error() != nil {
+			log.Println("MQTT Subscribe fetch failed:", tok.Error())
+		} else {
+			log.Println("Subscribed to fetch topic")
+		}
+	})
 
 	mqttClient = mqtt.NewClient(opts)
 	if tok := mqttClient.Connect(); tok.Wait() && tok.Error() != nil {
 		log.Fatal("MQTT Connect failed:", tok.Error())
 	}
-	log.Println("Connected to AWS IoT")
-
-	// Subscribe to metrics
-	if tok := mqttClient.Subscribe(mqttTopicMetrics, 0, mqttMetricsCallback); tok.Wait() && tok.Error() != nil {
-		log.Fatal("MQTT Subscribe failed:", tok.Error())
-	}
-	log.Println("Subscribed to metrics topic")
 
 	// HTTP Endpoints
 	http.HandleFunc("/", indexHandler)
