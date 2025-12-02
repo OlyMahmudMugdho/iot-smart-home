@@ -17,10 +17,7 @@ resource "aws_instance" "smart_home_web_server" {
   user_data = <<-EOF
                 #!/bin/bash
                 sudo apt-get update
-                sudo apt-get install -y docker docker-compose
-                sudo groupadd docker
-                sudo usermod -aG docker ubuntu
-                newgrp docker
+                sudo apt-get install -y docker.io docker-compose
                 source ~/.bashrc
                 EOF
 }
