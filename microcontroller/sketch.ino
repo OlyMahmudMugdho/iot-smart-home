@@ -3,8 +3,8 @@
 #include <DHT.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-
-
+#include <WiFiClientSecure.h>
+#include "secret.h"
 
 // --- Pins (adjust if needed) ---
 constexpr uint8_t IR_RECV_PIN {3};
@@ -33,40 +33,28 @@ unsigned long lastActivate2 = 0;
 bool lastState1 = false;
 bool lastState2 = false;
 const long DISTANCE_TRIGGER_CM = 200;
-const unsigned long PAIR_WINDOW_MS = 70000;
-const unsigned long EDGE_DEBOUNCE_MS = 200;
+// Fix: Reduced window from 70s to 5s for realistic transit
+const unsigned long PAIR_WINDOW_MS = 5000; 
+// Fix: Debounce for individual sensor noise, not used for cross-sensor logic anymore
+const unsigned long EDGE_DEBOUNCE_MS = 50; 
 
 // LED2 Manual Mode Control
 bool manualMode = false;      // When true, MQTT controls LED2; when false, sensors control LED2
 bool manualLedState = false;  // Desired LED2 state when in manual mode
-
-// WiFi & MQTT
-// const char* ssid = "Wokwi-GUEST";
-// const char* password = "";
-// const char* mqttServer = "broker.hivemq.com";
-// const uint16_t mqttPort = 1883;
 
 // MQTT Topics
 const char* mqttTopicRelay = "myhome/room/relay/set";
 const char* mqttTopicMetrics = "myhome/room/metrics";
 const char* mqttTopicLED = "myhome/room/led/set";           // LED2 ON/OFF control
 const char* mqttTopicManualMode = "myhome/room/led/manual"; // Manual mode ON/OFF
-
-
-
-// WiFiClient espClient;
-// PubSubClient client(espClient);
-
-
-// aws iot core
-#include <WiFiClientSecure.h>
-#include "secret.h"
-
+const char* mqttTopicFetch = "myhome/room/fetch";           // Topic to request state fetch
 
 WiFiClientSecure secureClient;
 PubSubClient client(secureClient);
 
-
+// Timers
+unsigned long lastPublishTime = 0;
+const unsigned long PUBLISH_INTERVAL = 1000; // Publish every 1s instead of delay
 
 // --- Helper functions ---
 long getDistancePins(uint8_t trigPin, uint8_t echoPin) {
@@ -75,7 +63,7 @@ long getDistancePins(uint8_t trigPin, uint8_t echoPin) {
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
-  long duration = pulseIn(echoPin, HIGH, 30000);
+  long duration = pulseIn(echoPin, HIGH, 30000); // 30ms timeout (approx 5m)
   if (duration == 0) return -1;
   return duration * 0.034 / 2;
 }
@@ -87,7 +75,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   
   String topicStr = String(topic);
 
-  // Handle Relay control (existing feature)
+  // Handle Relay control
   if (topicStr == mqttTopicRelay) {
     if (msg == "ON") digitalWrite(RELAY_PIN, HIGH);
     else if (msg == "OFF") digitalWrite(RELAY_PIN, LOW);
@@ -95,77 +83,84 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println("Relay command: " + msg);
   }
   
-  // Handle LED2 control (only works in manual mode)
+  // Handle LED2 control
   else if (topicStr == mqttTopicLED) {
-    if (msg == "ON") {
-      manualLedState = true;
-      Serial.println("LED command: ON");
-    }
-    else if (msg == "OFF") {
-      manualLedState = false;
-      Serial.println("LED command: OFF");
-    }
-    else if (msg == "TOGGLE") {
-      manualLedState = !manualLedState;
-      Serial.println("LED command: TOGGLE");
-    }
+    if (msg == "ON") manualLedState = true;
+    else if (msg == "OFF") manualLedState = false;
+    else if (msg == "TOGGLE") manualLedState = !manualLedState;
     
-    // Apply immediately if in manual mode
-    if (manualMode) {
-      digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
-    }
+    if (manualMode) digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
+    Serial.println("LED command: " + msg);
   }
   
   // Handle Manual Mode toggle
   else if (topicStr == mqttTopicManualMode) {
     if (msg == "ON") {
       manualMode = true;
-      // Apply the manual LED state immediately
       digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
-      Serial.println("Manual mode: ENABLED - Sensors overridden");
     }
-    else if (msg == "OFF") {
-      manualMode = false;
-      Serial.println("Manual mode: DISABLED - Sensors controlling LED");
-    }
+    else if (msg == "OFF") manualMode = false;
+    Serial.println("Manual mode: " + msg);
   }
 }
 
 void reconnectMQTT() {
-  while (!client.connected()) {
+  if (!client.connected()) {
     Serial.print("Connecting to AWS IoT...");
-    
     if (client.connect("ESP32_SmartHome")) {
       Serial.println("connected!");
       client.subscribe(mqttTopicRelay);
       client.subscribe(mqttTopicLED);
       client.subscribe(mqttTopicManualMode);
+      
+      // Send fetch event on boot/connection
+      client.publish(mqttTopicFetch, "1");
+      Serial.println("Sent state fetch request");
     } else {
-      Serial.print("Failed MQTT, rc=");
-      Serial.println(client.state());
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 2s");
       delay(2000);
     }
   }
 }
 
-
 void handleUltrasonicPairing(bool rising1, bool rising2) {
   unsigned long now = millis();
+  
   if (rising1) {
     lastActivate1 = now;
-    if (lastActivate2 > 0 && (now - lastActivate2) <= PAIR_WINDOW_MS && lastActivate2 + EDGE_DEBOUNCE_MS < now) {
-      if (lastActivate2 < lastActivate1) { if (personCount > 0) personCount--; lastActivate1 = lastActivate2 = 0; }
+    // Fix: Check if Sensor 2 was triggered recently (Entry 2->1 implies Exit if sensor 2 is inside? Wait.
+    // Usually 1 is outside, 2 is inside. 
+    // Entry: 1 -> 2. Exit: 2 -> 1.
+    // Let's assume 1->2 is Entry (Count++) and 2->1 is Exit (Count--).
+    
+    // If 2 was triggered before 1 (and within window), it is an Exit (2 -> 1)
+    // Fix: Removed EDGE_DEBOUNCE_MS check here to allow fast movement
+    if (lastActivate2 > 0 && (now - lastActivate2) <= PAIR_WINDOW_MS) {
+       if (lastActivate2 < lastActivate1) { 
+         if (personCount > 0) personCount--; 
+         Serial.println("Person Exited. Count: " + String(personCount));
+         lastActivate1 = lastActivate2 = 0; // Reset sequence
+       }
     }
   }
+  
   if (rising2) {
     lastActivate2 = now;
-    if (lastActivate1 > 0 && (now - lastActivate1) <= PAIR_WINDOW_MS && lastActivate1 + EDGE_DEBOUNCE_MS < now) {
-      if (lastActivate1 < lastActivate2) { personCount++; lastActivate1 = lastActivate2 = 0; }
+    // If 1 was triggered before 2 (and within window), it is an Entry (1 -> 2)
+    // Fix: Removed EDGE_DEBOUNCE_MS check here
+    if (lastActivate1 > 0 && (now - lastActivate1) <= PAIR_WINDOW_MS) {
+      if (lastActivate1 < lastActivate2) { 
+        personCount++; 
+        Serial.println("Person Entered. Count: " + String(personCount));
+        lastActivate1 = lastActivate2 = 0; // Reset sequence
+      }
     }
   }
 }
 
-// Publish metrics (now includes relay status, manual mode and LED state)
+// Publish metrics
 void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float hum, int count) {
   String payload = "{";
   payload += "\"LDR\":" + String(ldr);
@@ -185,7 +180,6 @@ void publishMetrics(int ldr, long d1, long d2, int mq2Value, float temp, float h
 // --- Setup ---
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n=== ESP32 Smart Home Controller ===");
   
   pinMode(RELAY_PIN, OUTPUT); digitalWrite(RELAY_PIN, LOW);
   pinMode(LED2_PIN, OUTPUT); digitalWrite(LED2_PIN, LOW);
@@ -197,36 +191,21 @@ void setup() {
   IrReceiver.begin(IR_RECV_PIN);
   dht.begin();
 
-  Serial.print("Connecting to WiFi");
-  // WiFi.begin(ssid, password);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected!");
-  Serial.println("IP: " + WiFi.localIP().toString());
+  Serial.println("\nWiFi Connected");
 
-  // client.setServer(mqttServer, mqttPort);
-  // client.setCallback(mqttCallback);
-
-  // aws iot core
   secureClient.setCACert(AWS_CERT_CA);
-secureClient.setCertificate(AWS_CERT_CRT);
-secureClient.setPrivateKey(AWS_CERT_PRIVATE);
+  secureClient.setCertificate(AWS_CERT_CRT);
+  secureClient.setPrivateKey(AWS_CERT_PRIVATE);
 
-client.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
-client.setCallback(mqttCallback);
-
- //
-  reconnectMQTT();
+  client.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+  client.setCallback(mqttCallback);
   
-  Serial.println("\nMQTT Topics:");
-  Serial.println("  Relay Control: " + String(mqttTopicRelay));
-  Serial.println("  LED Control:   " + String(mqttTopicLED));
-  Serial.println("  Manual Mode:   " + String(mqttTopicManualMode));
-  Serial.println("  Metrics:       " + String(mqttTopicMetrics));
-  Serial.println("\n=== System Ready ===\n");
+  reconnectMQTT();
 }
 
 // --- Loop ---
@@ -234,56 +213,59 @@ void loop() {
   if (!client.connected()) reconnectMQTT();
   client.loop();
 
-  // IR control (for RELAY_PIN - existing feature)
+  // IR Remote
   if (IrReceiver.decode()) {
     if (IrReceiver.decodedIRData.command == TOGGLE_BTN) {
       digitalWrite(RELAY_PIN, !digitalRead(RELAY_PIN));
-      Serial.println("IR: Relay toggled");
     }
     IrReceiver.resume();
   }
 
-  // Read Sensors
+  // Read Sensors (Fast Polling)
   int ldrValue = analogRead(LDR_PIN);
   long dist1 = getDistancePins(TRIG1_PIN, ECHO1_PIN);
   long dist2 = getDistancePins(TRIG2_PIN, ECHO2_PIN);
   int mq2Value = analogRead(MQ2_PIN);
-  float t = dht.readTemperature();
-  float h = dht.readHumidity();
 
-  // Person counting logic
+  // Person Counting Logic
+  // Threshold logic
   bool objectClose1 = (dist1 > 0 && dist1 < DISTANCE_TRIGGER_CM);
   bool objectClose2 = (dist2 > 0 && dist2 < DISTANCE_TRIGGER_CM);
   unsigned long now = millis();
+
+  // Detect Rising Edges (State changed from Open -> Blocked)
+  // Added explicit debounce to avoid flickering triggers from same person standing in beam
+  // Fix: Ensure debounce is only for the SAME sensor to avoid noise
   bool rising1 = objectClose1 && !lastState1 && (now - lastActivate1 > EDGE_DEBOUNCE_MS);
   bool rising2 = objectClose2 && !lastState2 && (now - lastActivate2 > EDGE_DEBOUNCE_MS);
-  lastState1 = objectClose1; lastState2 = objectClose2;
+
+  lastState1 = objectClose1; 
+  lastState2 = objectClose2;
+
   if (rising1 || rising2) handleUltrasonicPairing(rising1, rising2);
   if (personCount < 0) personCount = 0;
 
-  // LED2 Control Logic
-  // If manual mode is OFF, sensors control LED2
-  // If manual mode is ON, MQTT commands control LED2
+  // LED2 Logic
   if (!manualMode) {
-    // Automatic mode: Sensors control LED2
-    // LED2 ON when: people in room AND it's dark (LDR > threshold)
-    if (personCount > 0 && ldrValue > LDR_THRESHOLD) {
-      digitalWrite(LED2_PIN, HIGH);
-    } else {
-      digitalWrite(LED2_PIN, LOW);
-    }
+    if (personCount > 0 && ldrValue > LDR_THRESHOLD) digitalWrite(LED2_PIN, HIGH);
+    else digitalWrite(LED2_PIN, LOW);
   } else {
-    // Manual mode: Continuously enforce the manual LED state
-    // This ensures the LED stays in the commanded state
     digitalWrite(LED2_PIN, manualLedState ? HIGH : LOW);
   }
 
-  // Gas/Smoke alarm (always active regardless of mode)
+  // Alarm
   if (mq2Value > MQ2_THRESHOLD) tone(BUZZER_PIN, BUZZER_FREQ);
   else noTone(BUZZER_PIN);
 
-  // Publish metrics over MQTT
-  publishMetrics(ldrValue, dist1, dist2, mq2Value, t, h, personCount);
-
-  delay(500); // slower update
+  // Publish Metrics (Non-blocking)
+  // Fix: Replaced delay(500) with non-blocking timer
+  if (millis() - lastPublishTime > PUBLISH_INTERVAL) {
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    publishMetrics(ldrValue, dist1, dist2, mq2Value, t, h, personCount);
+    lastPublishTime = millis();
+  }
+  
+  // Small delay to prevent CPU hogging, but small enough for sensors
+  delay(50);
 }

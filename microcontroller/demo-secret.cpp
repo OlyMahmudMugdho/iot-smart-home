@@ -26,4 +26,3 @@ const char AWS_CERT_PRIVATE[] = R"EOF(
 
 -----END RSA PRIVATE KEY-----
 )EOF";
-
