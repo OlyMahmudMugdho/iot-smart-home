@@ -30,12 +30,12 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/esp32-smart-home:${{ env.TAG }}
 
       # -------------------------------------------------------------------
-      # FIXED: Use docker/docker-compose.yml (correct path!)
+      # FIXED: Use docker/docker-compose.yaml (correct path!)
       # -------------------------------------------------------------------
       - name: Prepare updated compose file content
         id: prepare_compose
         run: |
-          COMPOSE_FILE="docker/docker-compose.yml"
+          COMPOSE_FILE="docker/docker-compose.yaml"
 
           if [ ! -f "$COMPOSE_FILE" ]; then
             echo "ERROR: $COMPOSE_FILE not found"
