@@ -264,6 +264,5 @@ terraform apply
 * Add OTA firmware updates
 * Add past graphs showing environmental figures
 
-
-
-
+## License
+This project is licensed under MIT
