@@ -168,8 +168,7 @@ Make sure to manually export identical environment settings.
 
 3. Transfer the program to the ESP32-S3 using a USB connection.
 
-Screenshot of Arduino/PlatformIO upload
-**[Place screenshot here]**
+![arduino ide](architecture/arduino_ide.png)
 
 ---
 
