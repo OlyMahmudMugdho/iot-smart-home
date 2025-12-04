@@ -6,7 +6,7 @@
 #include <WiFiClientSecure.h>
 #include "secret.h"
 
-// --- Pins (adjust if needed) ---
+// --- Pins ---
 constexpr uint8_t IR_RECV_PIN {3};
 constexpr uint8_t RELAY_PIN {2};      // IR controlled LED via relay
 constexpr uint8_t LED2_PIN {12};      // Room light controlled by sensors
@@ -33,9 +33,9 @@ unsigned long lastActivate2 = 0;
 bool lastState1 = false;
 bool lastState2 = false;
 const long DISTANCE_TRIGGER_CM = 200;
-// Fix: Reduced window from 70s to 5s for realistic transit
+//  Reduced window from 70s to 5s for realistic transit
 const unsigned long PAIR_WINDOW_MS = 5000; 
-// Fix: Debounce for individual sensor noise, not used for cross-sensor logic anymore
+//  Debounce for individual sensor noise, not used for cross-sensor logic anymore
 const unsigned long EDGE_DEBOUNCE_MS = 50; 
 
 // LED2 Manual Mode Control
@@ -130,13 +130,13 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
   
   if (rising1) {
     lastActivate1 = now;
-    // Fix: Check if Sensor 2 was triggered recently (Entry 2->1 implies Exit if sensor 2 is inside? Wait.
+    //  Check if Sensor 2 was triggered recently (Entry 2->1 implies Exit if sensor 2 is inside? Wait.
     // Usually 1 is outside, 2 is inside. 
     // Entry: 1 -> 2. Exit: 2 -> 1.
     // Let's assume 1->2 is Entry (Count++) and 2->1 is Exit (Count--).
     
     // If 2 was triggered before 1 (and within window), it is an Exit (2 -> 1)
-    // Fix: Removed EDGE_DEBOUNCE_MS check here to allow fast movement
+    //  Removed EDGE_DEBOUNCE_MS check here to allow fast movement
     if (lastActivate2 > 0 && (now - lastActivate2) <= PAIR_WINDOW_MS) {
        if (lastActivate2 < lastActivate1) { 
          if (personCount > 0) personCount--; 
@@ -149,7 +149,7 @@ void handleUltrasonicPairing(bool rising1, bool rising2) {
   if (rising2) {
     lastActivate2 = now;
     // If 1 was triggered before 2 (and within window), it is an Entry (1 -> 2)
-    // Fix: Removed EDGE_DEBOUNCE_MS check here
+    //  Removed EDGE_DEBOUNCE_MS check here
     if (lastActivate1 > 0 && (now - lastActivate1) <= PAIR_WINDOW_MS) {
       if (lastActivate1 < lastActivate2) { 
         personCount++; 
@@ -235,7 +235,7 @@ void loop() {
 
   // Detect Rising Edges (State changed from Open -> Blocked)
   // Added explicit debounce to avoid flickering triggers from same person standing in beam
-  // Fix: Ensure debounce is only for the SAME sensor to avoid noise
+  //  Ensure debounce is only for the SAME sensor to avoid noise
   bool rising1 = objectClose1 && !lastState1 && (now - lastActivate1 > EDGE_DEBOUNCE_MS);
   bool rising2 = objectClose2 && !lastState2 && (now - lastActivate2 > EDGE_DEBOUNCE_MS);
 
@@ -258,7 +258,7 @@ void loop() {
   else noTone(BUZZER_PIN);
 
   // Publish Metrics (Non-blocking)
-  // Fix: Replaced delay(500) with non-blocking timer
+  //  Replaced delay(500) with non-blocking timer
   if (millis() - lastPublishTime > PUBLISH_INTERVAL) {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
