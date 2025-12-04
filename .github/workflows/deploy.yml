@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'http-server/**'
 
 jobs:
   build-and-deploy:
